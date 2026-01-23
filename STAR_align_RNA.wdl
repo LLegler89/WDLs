@@ -58,42 +58,43 @@ task STAR_Align_SortedBam {
      size(read2_fastq, "GB") +
      size(star_index_tar, "GB") ) + 200
 
-  command <<<
-    set -euo pipefail
+ command <<<
+  set -euo pipefail
 
-    tar xvzf ${star_index_tar} --no-overwrite-dir --no-same-owner --no-same-permissions -C ./
+  tar -xzf "~{star_index_tar}" --no-overwrite-dir --no-same-owner --no-same-permissions -C .
 
+  GENOME_DIR=$(find . -maxdepth 3 -type f -name SA -printf '%h\n' | head -n 1)
+  if [[ -z "${GENOME_DIR}" ]]; then
+    echo "ERROR: Could not find STAR index (SA file) after untarring." >&2
+    ls -lah >&2
+    exit 1
+  fi
 
-    GENOME_DIR="./"
+  rm -f "~{star_index_tar}" # make more space available.
 
-    rm -f "~{star_index_tar}" # make more space available.
-    
-    READ_CMD=""
-    if [[ "~{read1_fastq}" == *.gz ]]; then
-      READ_CMD="--readFilesCommand zcat"
-    fi
+  READ_CMD=""
+  if [[ "~{read1_fastq}" == *.gz ]]; then
+    READ_CMD="--readFilesCommand zcat"
+  fi
 
-    
-    STAR \
-      --runThreadN ~{threads} \
-      --genomeDir ./ \
-      --readFilesIn "~{read1_fastq}" "~{read2_fastq}" \
-      ${READ_CMD} \
-      --outSAMtype BAM SortedByCoordinate \
-      --outFileNamePrefix "~{sample_id}.star." \
-      ~{extra_star_args}
+  STAR \
+    --runThreadN ~{threads} \
+    --genomeDir "${GENOME_DIR}" \
+    --readFilesIn "~{read1_fastq}" "~{read2_fastq}" \
+    ${READ_CMD} \
+    --outSAMtype BAM SortedByCoordinate \
+    --outFileNamePrefix "~{sample_id}.star." \
+    ~{extra_star_args}
 
-    # STAR writes:
-    #   star.Aligned.sortedByCoord.out.bam
-    # and index may or may not be created depending on STAR version/args, so index here for consistency.
-    if [[ ! -f ~{sample_id}.star.Aligned.sortedByCoord.out.bam ]]; then
-      echo "ERROR: STAR did not produce ~{sample_id}.star.Aligned.sortedByCoord.out.bam" >&2
-      ls -lah >&2
-      exit 1
-    fi
+  if [[ ! -f ~{sample_id}.star.Aligned.sortedByCoord.out.bam ]]; then
+    echo "ERROR: STAR did not produce ~{sample_id}.star.Aligned.sortedByCoord.out.bam" >&2
+    ls -lah >&2
+    exit 1
+  fi
 
-    samtools index -@ ~{threads} ~{sample_id}.star.Aligned.sortedByCoord.out.bam
-  >>>
+  samtools index -@ ~{threads} ~{sample_id}.star.Aligned.sortedByCoord.out.bam
+>>>
+
 
   output {
     File sorted_bam = "~{sample_id}.star.Aligned.sortedByCoord.out.bam"
