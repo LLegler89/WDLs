@@ -1,6 +1,6 @@
 version: 1.2
 workflows:
   - subclass: WDL
-    name: juicerwdl2
-    primaryDescriptorPath: /juicerwdl2.wdl
+    name: STAR_align_RNA
+    primaryDescriptorPath: /STAR_align_RNA.wdl
   
