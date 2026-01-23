@@ -7,7 +7,7 @@ workflow STAR_align_paired_rnaseq {
     File read1_fastq
     File read2_fastq
 
-    # Uncompressed tar containing STAR_index_dir/ at its root
+    # Uncompressed tar containing STAR_index_dir/ at its root (can also be .tar.gz)
     File star_index_tar
 
     Int threads = 8
@@ -38,6 +38,9 @@ workflow STAR_align_paired_rnaseq {
     File star_log_final = STAR_Align_SortedBam.log_final
     File star_log_out = STAR_Align_SortedBam.log_out
     File star_log_progress = STAR_Align_SortedBam.log_progress
+
+    # NEW: STAR gene counts (requires index built with a GTF)
+    File gene_counts = STAR_Align_SortedBam.gene_counts
   }
 }
 
@@ -58,43 +61,50 @@ task STAR_Align_SortedBam {
      size(read2_fastq, "GB") +
      size(star_index_tar, "GB") ) + 200
 
- command <<<
-  set -euo pipefail
+  command <<<
+    set -euo pipefail
 
-  tar -xzf "~{star_index_tar}" --no-overwrite-dir --no-same-owner --no-same-permissions -C .
+    tar -xzf "~{star_index_tar}" --no-overwrite-dir --no-same-owner --no-same-permissions -C .
 
-  GENOME_DIR=$(find . -maxdepth 3 -type f -name SA -printf '%h\n' | head -n 1)
-  if [[ -z "${GENOME_DIR}" ]]; then
-    echo "ERROR: Could not find STAR index (SA file) after untarring." >&2
-    ls -lah >&2
-    exit 1
-  fi
+    GENOME_DIR=$(find . -maxdepth 3 -type f -name SA -printf '%h\n' | head -n 1)
+    if [[ -z "${GENOME_DIR}" ]]; then
+      echo "ERROR: Could not find STAR index (SA file) after untarring." >&2
+      ls -lah >&2
+      exit 1
+    fi
 
-  rm -f "~{star_index_tar}" # make more space available.
+    rm -f "~{star_index_tar}" # make more space available.
 
-  READ_CMD=""
-  if [[ "~{read1_fastq}" == *.gz ]]; then
-    READ_CMD="--readFilesCommand zcat"
-  fi
+    READ_CMD=""
+    if [[ "~{read1_fastq}" == *.gz ]]; then
+      READ_CMD="--readFilesCommand zcat"
+    fi
 
-  STAR \
-    --runThreadN ~{threads} \
-    --genomeDir "${GENOME_DIR}" \
-    --readFilesIn "~{read1_fastq}" "~{read2_fastq}" \
-    ${READ_CMD} \
-    --outSAMtype BAM SortedByCoordinate \
-    --outFileNamePrefix "~{sample_id}.star." \
-    ~{extra_star_args}
+    STAR \
+      --runThreadN ~{threads} \
+      --genomeDir "${GENOME_DIR}" \
+      --readFilesIn "~{read1_fastq}" "~{read2_fastq}" \
+      ${READ_CMD} \
+      --outSAMtype BAM SortedByCoordinate \
+      --outFileNamePrefix "~{sample_id}.star." \
+      --quantMode GeneCounts \
+      ~{extra_star_args}
 
-  if [[ ! -f ~{sample_id}.star.Aligned.sortedByCoord.out.bam ]]; then
-    echo "ERROR: STAR did not produce ~{sample_id}.star.Aligned.sortedByCoord.out.bam" >&2
-    ls -lah >&2
-    exit 1
-  fi
+    if [[ ! -f ~{sample_id}.star.Aligned.sortedByCoord.out.bam ]]; then
+      echo "ERROR: STAR did not produce ~{sample_id}.star.Aligned.sortedByCoord.out.bam" >&2
+      ls -lah >&2
+      exit 1
+    fi
 
-  samtools index -@ ~{threads} ~{sample_id}.star.Aligned.sortedByCoord.out.bam
->>>
+    if [[ ! -f ~{sample_id}.star.ReadsPerGene.out.tab ]]; then
+      echo "ERROR: STAR did not produce ~{sample_id}.star.ReadsPerGene.out.tab (gene counts)." >&2
+      echo "This typically happens if the STAR genome index was not built with a GTF (sjdbGTFfile)." >&2
+      ls -lah >&2
+      exit 1
+    fi
 
+    samtools index -@ ~{threads} ~{sample_id}.star.Aligned.sortedByCoord.out.bam
+  >>>
 
   output {
     File sorted_bam = "~{sample_id}.star.Aligned.sortedByCoord.out.bam"
@@ -102,6 +112,9 @@ task STAR_Align_SortedBam {
     File log_final = "~{sample_id}.star.Log.final.out"
     File log_out = "~{sample_id}.star.Log.out"
     File log_progress = "~{sample_id}.star.Log.progress.out"
+
+    # NEW: STAR gene counts output
+    File gene_counts = "~{sample_id}.star.ReadsPerGene.out.tab"
   }
 
   runtime {
