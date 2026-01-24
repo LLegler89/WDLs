@@ -1,6 +1,6 @@
 version: 1.2
 workflows:
   - subclass: WDL
-    name: STAR_chimeric
-    primaryDescriptorPath: /STAR_chimeric.wdl
+    name: STAR_align_RNA
+    primaryDescriptorPath: /STAR_align_RNA.wdl
   
