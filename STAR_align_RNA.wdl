@@ -13,23 +13,22 @@ workflow STAR_align_paired_rnaseq {
     Int threads = 8
     String memory = "64G"
 
-    # Optional: to match whatever your STAR-Fusion WDL uses
+    # Container used for both fastp and STAR
     String docker_image = "trinityctat/starfusion:latest"
 
-    # Optional extra STAR args (ex: "--outSAMattributes NH HI AS nM --chimOutType Junctions")
+    # Optional extra STAR args
     String extra_star_args = ""
 
-    # --- Cutadapt options ---
-    # If empty, runs cutadapt in "minimal" mode (quality trimming only if you specify it via extra_cutadapt_args)
-    # You can also pass adapters through extra_cutadapt_args, e.g.:
-    #   "--adapter AGATCGGAAGAGCACACGTCTGAACTCCAGTCA --adapter2 AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
-    String extra_cutadapt_args = ""
+    # --- fastp options ---
+    # Examples:
+    #   "--detect_adapter_for_pe --cut_front --cut_tail --cut_mean_quality 20 --length_required 20"
+    #   "--adapter_sequence AGATCGGAAGAGCACACGTCTGAACTCCAGTCA --adapter_sequence_r2 AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
+    String extra_fastp_args = "--detect_adapter_for_pe"
 
-    # If true, delete large intermediates where safe
     Boolean cleanup_intermediates = true
   }
 
-  call Cutadapt_Trim_Paired {
+  call Fastp_Trim_Paired {
     input:
       sample_id = sample_id,
       read1_fastq = read1_fastq,
@@ -37,15 +36,14 @@ workflow STAR_align_paired_rnaseq {
       threads = threads,
       memory = memory,
       docker_image = docker_image,
-      extra_cutadapt_args = extra_cutadapt_args
+      extra_fastp_args = extra_fastp_args
   }
 
   call STAR_Align_SortedBam {
     input:
       sample_id = sample_id,
-      # feed trimmed reads into STAR
-      read1_fastq = Cutadapt_Trim_Paired.trimmed_read1_fastq,
-      read2_fastq = Cutadapt_Trim_Paired.trimmed_read2_fastq,
+      read1_fastq = Fastp_Trim_Paired.trimmed_read1_fastq,
+      read2_fastq = Fastp_Trim_Paired.trimmed_read2_fastq,
       star_index_tar = star_index_tar,
       threads = threads,
       memory = memory,
@@ -55,22 +53,21 @@ workflow STAR_align_paired_rnaseq {
   }
 
   output {
-    File trimmed_read1 = Cutadapt_Trim_Paired.trimmed_read1_fastq
-    File trimmed_read2 = Cutadapt_Trim_Paired.trimmed_read2_fastq
-    File cutadapt_report = Cutadapt_Trim_Paired.cutadapt_report
+    File trimmed_read1 = Fastp_Trim_Paired.trimmed_read1_fastq
+    File trimmed_read2 = Fastp_Trim_Paired.trimmed_read2_fastq
+    File fastp_json = Fastp_Trim_Paired.fastp_json
+    File fastp_html = Fastp_Trim_Paired.fastp_html
 
     File bam = STAR_Align_SortedBam.sorted_bam
     File bam_bai = STAR_Align_SortedBam.sorted_bam_bai
     File star_log_final = STAR_Align_SortedBam.log_final
     File star_log_out = STAR_Align_SortedBam.log_out
     File star_log_progress = STAR_Align_SortedBam.log_progress
-
-    # STAR gene counts (requires index built with a GTF)
     File gene_counts = STAR_Align_SortedBam.gene_counts
   }
 }
 
-task Cutadapt_Trim_Paired {
+task Fastp_Trim_Paired {
   input {
     String sample_id
     File read1_fastq
@@ -78,7 +75,7 @@ task Cutadapt_Trim_Paired {
     Int threads
     String memory
     String docker_image
-    String extra_cutadapt_args = ""
+    String extra_fastp_args = "--detect_adapter_for_pe"
   }
 
   Int disk_gb = ceil(
@@ -89,54 +86,62 @@ task Cutadapt_Trim_Paired {
   command <<<
     set -euo pipefail
 
-    echo "Checking for cutadapt..."
-    if ! command -v cutadapt >/dev/null 2>&1; then
-      echo "cutadapt not found; attempting install via python/pip..."
-      if command -v python3 >/dev/null 2>&1; then
-        python3 -m pip install --user --no-cache-dir cutadapt
-        export PATH="$HOME/.local/bin:$PATH"
-      elif command -v python >/dev/null 2>&1; then
-        python -m pip install --user --no-cache-dir cutadapt
-        export PATH="$HOME/.local/bin:$PATH"
-      else
-        echo "ERROR: Neither cutadapt nor python is available in the container." >&2
-        exit 1
+    echo "Checking for fastp..."
+    if ! command -v fastp >/dev/null 2>&1; then
+      echo "fastp not found; attempting install..."
+
+      # Try apt-get if present (Debian/Ubuntu-based images)
+      if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -y
+        apt-get install -y fastp || true
+      fi
+
+      # If still missing, fetch static binary (requires network)
+      if ! command -v fastp >/dev/null 2>&1; then
+        echo "fastp still not found; downloading static binary..."
+        curl -fsSL -o fastp \
+          https://github.com/OpenGene/fastp/releases/latest/download/fastp
+        chmod +x fastp
+        export PATH="$PWD:$PATH"
       fi
     fi
 
-    echo "cutadapt version:"
-    cutadapt --version
+    fastp --version
 
-    # Build input commands (support gz or plain)
-    R1="~{read1_fastq}"
-    R2="~{read2_fastq}"
+    OUT1="~{sample_id}.fastp.R1.fastq.gz"
+    OUT2="~{sample_id}.fastp.R2.fastq.gz"
+    JSON="~{sample_id}.fastp.json"
+    HTML="~{sample_id}.fastp.html"
 
-    OUT1="~{sample_id}.cutadapt.R1.fastq.gz"
-    OUT2="~{sample_id}.cutadapt.R2.fastq.gz"
-
-    # Note: cutadapt auto-detects gzip by filename, so we always write .gz outputs.
-    # You can pass adapters/quality/trimming parameters through extra_cutadapt_args.
-    echo "Running cutadapt..."
-    cutadapt \
-      -j ~{threads} \
+    # fastp can read gz and write gz; no special readFilesCommand stuff needed here.
+    fastp \
+      -i "~{read1_fastq}" \
+      -I "~{read2_fastq}" \
       -o "${OUT1}" \
-      -p "${OUT2}" \
-      ~{extra_cutadapt_args} \
-      "${R1}" "${R2}" \
-      > "~{sample_id}.cutadapt.report.txt"
+      -O "${OUT2}" \
+      -w ~{threads} \
+      -j "${JSON}" \
+      -h "${HTML}" \
+      ~{extra_fastp_args}
 
-    # Sanity checks
     if [[ ! -s "${OUT1}" ]] || [[ ! -s "${OUT2}" ]]; then
-      echo "ERROR: cutadapt did not produce trimmed FASTQs." >&2
+      echo "ERROR: fastp did not produce trimmed FASTQs." >&2
+      ls -lah >&2
+      exit 1
+    fi
+
+    if [[ ! -s "${JSON}" ]] || [[ ! -s "${HTML}" ]]; then
+      echo "ERROR: fastp did not produce JSON/HTML reports." >&2
       ls -lah >&2
       exit 1
     fi
   >>>
 
   output {
-    File trimmed_read1_fastq = "~{sample_id}.cutadapt.R1.fastq.gz"
-    File trimmed_read2_fastq = "~{sample_id}.cutadapt.R2.fastq.gz"
-    File cutadapt_report = "~{sample_id}.cutadapt.report.txt"
+    File trimmed_read1_fastq = "~{sample_id}.fastp.R1.fastq.gz"
+    File trimmed_read2_fastq = "~{sample_id}.fastp.R2.fastq.gz"
+    File fastp_json = "~{sample_id}.fastp.json"
+    File fastp_html = "~{sample_id}.fastp.html"
   }
 
   runtime {
@@ -169,8 +174,7 @@ task STAR_Align_SortedBam {
   command <<<
     set -euo pipefail
 
-    # Support .tar or .tar.gz; tar will usually autodetect with -xf, but -xzf will fail for plain .tar.
-    # So: try gzip mode first, then fallback.
+    # Support .tar or .tar.gz
     if tar -tzf "~{star_index_tar}" >/dev/null 2>&1; then
       tar -xzf "~{star_index_tar}" --no-overwrite-dir --no-same-owner --no-same-permissions -C .
     else
