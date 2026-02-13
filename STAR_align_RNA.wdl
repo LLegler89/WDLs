@@ -81,7 +81,7 @@ task Fastp_Trim_Paired {
   Int disk_gb = ceil(
      size(read1_fastq, "GB") +
      size(read2_fastq, "GB")
-  ) + 50
+  ) + 500
 
   command <<<
     set -euo pipefail
